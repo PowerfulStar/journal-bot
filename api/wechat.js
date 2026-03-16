@@ -69,35 +69,46 @@ module.exports = async (req, res) => {
   }
 
   if (req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      const msg = parseXML(body);
+    // 读取原始body
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const body = Buffer.concat(chunks).toString('utf8');
 
-      if (msg.type !== 'text') {
-        return res.send(buildReply(msg.from, msg.to, '请发送期刊名称进行查询～'));
+    console.log('收到微信消息:', body);
+
+    const msg = parseXML(body);
+    console.log('解析结果:', JSON.stringify(msg));
+
+    if (msg.type !== 'text') {
+      res.setHeader('Content-Type', 'application/xml');
+      return res.send(buildReply(msg.from, msg.to, '请发送期刊名称进行查询～'));
+    }
+
+    try {
+      const matched = await findJournal(msg.content);
+      console.log('匹配结果:', matched);
+
+      if (matched === 'NOT_FOUND') {
+        res.setHeader('Content-Type', 'application/xml');
+        return res.send(buildReply(msg.from, msg.to, `没有找到"${msg.content}"相关期刊，请换个关键词试试～`));
       }
 
-      try {
-        const matched = await findJournal(msg.content);
+      const journal = JOURNALS.find(j =>
+        j.name.toLowerCase() === matched.toLowerCase()
+      );
 
-        if (matched === 'NOT_FOUND') {
-          return res.send(buildReply(msg.from, msg.to, `没有找到"${msg.content}"相关期刊，请换个关键词试试～`));
-        }
+      if (!journal) {
+        res.setHeader('Content-Type', 'application/xml');
+        return res.send(buildReply(msg.from, msg.to, `没有找到"${msg.content}"相关期刊，请换个关键词试试～`));
+      }
 
-        const journal = JOURNALS.find(j =>
-          j.name.toLowerCase() === matched.toLowerCase()
-        );
+      const change = parseFloat(journal.change_2yr);
+      const changeStr = change > 0 ? `↑ +${journal.change_2yr}` : `↓ ${journal.change_2yr}`;
+      const notesStr = journal.notes ? `\n💬 备注：${journal.notes}` : '';
 
-        if (!journal) {
-          return res.send(buildReply(msg.from, msg.to, `没有找到"${msg.content}"相关期刊，请换个关键词试试～`));
-        }
-
-        const change = parseFloat(journal.change_2yr);
-        const changeStr = change > 0 ? `↑ +${journal.change_2yr}` : `↓ ${journal.change_2yr}`;
-        const notesStr = journal.notes ? `\n💬 备注：${journal.notes}` : '';
-
-        const reply = `📚 期刊查询结果
+      const reply = `📚 期刊查询结果
 
 📖 ${journal.name}
 
@@ -111,11 +122,15 @@ module.exports = async (req, res) => {
 - 中科院大类：${journal.cas_category}
 - 中科院分区：${journal.cas_zone}${notesStr}`;
 
-        return res.send(buildReply(msg.from, msg.to, reply));
+      res.setHeader('Content-Type', 'application/xml');
+      return res.send(buildReply(msg.from, msg.to, reply));
 
-      } catch (e) {
-        return res.send(buildReply(msg.from, msg.to, '查询出错，请稍后再试～'));
-      }
-    });
+    } catch (e) {
+      console.error('出错了:', e);
+      res.setHeader('Content-Type', 'application/xml');
+      return res.send(buildReply(msg.from, msg.to, '查询出错，请稍后再试～'));
+    }
   }
+
+  return res.status(200).send('ok');
 };
